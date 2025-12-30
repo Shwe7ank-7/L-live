@@ -1,36 +1,16 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
     <title>Stream Player</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-    <!-- Latest Shaka Player -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.7.11/shaka-player.ui.min.js" crossorigin="anonymous"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.7.11/controls.min.css" crossorigin="anonymous">
-
-    <script disable-devtool-auto src="https://cdn.jsdelivr.net/npm/disable-devtool"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.7.11/shaka-player.ui.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.7.11/controls.min.css">
 
     <style>
-        body {
-            margin: 0;
-            background-color: black;
-            font-family: Arial, sans-serif;
-        }
-
-        .shaka-video-container {
-            position: absolute;
-            inset: 0;
-            width: 100%;
-            height: 100%;
-        }
-
-        video {
-            width: 100%;
-            height: 100%;
-            background: #000;
-            object-fit: contain;
-        }
+        body { margin:0; background:black; }
+        .shaka-video-container { position:absolute; inset:0; }
+        video { width:100%; height:100%; object-fit:contain; }
     </style>
 </head>
 
@@ -38,131 +18,71 @@
 
 <!-- TELEGRAM POPUP (UNCHANGED) -->
 <div id="popup">
-    <div class="popup-content">
-        <h2>Support Us!</h2>
-        <p>Join our Telegram channel @Shwetank_Singh for more updates.</p>
-        <button class="join-btn" onclick="window.open('https://t.me/+3sgGQcDP6ExhYTU1','_blank')">Join Now</button>
-        <button class="close-btn" onclick="closePopup()">Already Joined</button>
-    </div>
+  <div class="popup-content">
+    <h2>Support Us!</h2>
+    <p>Join our Telegram channel</p>
+    <button onclick="window.open('https://t.me/+3sgGQcDP6ExhYTU1','_blank')">Join Now</button>
+    <button onclick="closePopup()">Already Joined</button>
+  </div>
 </div>
 
 <script>
-function closePopup() {
-    document.getElementById('popup').style.display = 'none';
-}
+function closePopup(){ document.getElementById('popup').style.display='none'; }
 </script>
 
-<!-- PLAYER -->
 <div class="shaka-video-container">
-    <video id="video" autoplay playsinline preload="metadata"></video>
+  <video id="video" autoplay playsinline preload="metadata"></video>
 </div>
 
 <script>
 document.addEventListener('DOMContentLoaded', async () => {
 
-    shaka.polyfill.installAll();
+  shaka.polyfill.installAll();
+  if (!shaka.Player.isBrowserSupported()) return;
 
-    if (!shaka.Player.isBrowserSupported()) {
-        console.error('Browser not supported');
-        return;
+  // 1️⃣ Resolve stream FIRST
+  const id = new URLSearchParams(location.search).get('id');
+  if (!id) return;
+
+  const res = await fetch('https://live7.pages.dev/api/stream.php');
+  const list = await res.json();
+  const s = list.find(x => x.id === id);
+  if (!s) return;
+
+  // 2️⃣ Prepare config BEFORE creating player
+  const playerConfig = {
+    streaming: {
+      bufferingGoal: 20,
+      rebufferingGoal: 5,
+      bufferBehind: 25
     }
+  };
 
-    const video = document.getElementById('video');
-    const player = new shaka.Player(video);
-    const container = document.querySelector('.shaka-video-container');
-    new shaka.ui.Overlay(player, container, video);
+  if (s.mpd && s.key) {
+    const [kid,key] = s.key.split(':');
+    playerConfig.drm = {
+      clearKeys: { [kid]: key }
+    };
+  }
 
-    // YOUR OPTIMIZED SHAKA CONFIG
-    player.configure({
-        streaming: {
-            lowLatencyMode: true,
-            bufferingGoal: 20,
-            rebufferingGoal: 5,
-            bufferBehind: 25,
-            segmentPrefetchLimit: 3,
-            retryParameters: {
-                timeout: 8000,
-                maxAttempts: 5,
-                baseDelay: 300,
-                backoffFactor: 1.2
-            }
-        },
-        manifest: {
-            retryParameters: {
-                timeout: 8000,
-                maxAttempts: 3
-            }
-        },
-        drm: {
-            retryParameters: {
-                maxAttempts: 3
-            }
-        }
-    });
+  // 3️⃣ Create player ONCE
+  const video = document.getElementById('video');
+  const player = new shaka.Player(video);
+  new shaka.ui.Overlay(player, document.querySelector('.shaka-video-container'), video);
 
-    player.addEventListener('error', e => {
-        console.error('Shaka error', e.detail);
-    });
+  player.configure(playerConfig);
 
-    try {
-        const params = new URLSearchParams(window.location.search);
-        const streamId = params.get('id');
-        if (!streamId) throw new Error('No stream ID');
+  // 4️⃣ Load stream
+  await player.load(s.mpd || s.m3u8);
 
-        const res = await fetch('https://live7.pages.dev/api/stream.php');
-        const streams = await res.json();
-        const stream = streams.find(s => s.id === streamId);
-
-        if (!stream) throw new Error('Stream not found');
-
-        // DASH + ClearKey
-        if (stream.mpd && stream.key) {
-            const [kid, key] = stream.key.split(':');
-            player.configure({
-                drm: {
-                    clearKeys: {
-                        [kid.trim()]: key.trim()
-                    }
-                }
-            });
-            await player.load(stream.mpd);
-        }
-        // HLS
-        else if (stream.m3u8) {
-            await player.load(stream.m3u8);
-        }
-        else {
-            throw new Error('Invalid stream format');
-        }
-
-        // AUTOPLAY HANDLING
-        const tryPlay = async () => {
-            try {
-                video.muted = false;
-                await video.play();
-            } catch {
-                video.muted = true;
-                await video.play();
-            }
-        };
-
-        if (video.readyState >= 3) {
-            tryPlay();
-        } else {
-            video.addEventListener('canplay', tryPlay, { once: true });
-        }
-
-        // ENABLE SOUND AFTER INTERACTION
-        const enableSound = () => {
-            if (video.muted) video.muted = false;
-        };
-        ['click','touchstart','keydown'].forEach(e =>
-            document.addEventListener(e, enableSound, { once: true })
-        );
-
-    } catch (err) {
-        console.error(err);
-    }
+  // 5️⃣ Autoplay logic (same as working file)
+  try {
+    video.muted = false;
+    await video.play();
+  } catch {
+    video.muted = true;
+    await video.play();
+  }
 });
 </script>
 
